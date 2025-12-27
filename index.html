@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>秘密のバトルシップ 7x7</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; background-color: #f0f0f0; margin: 10px; }
+        .game-container { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; margin-top: 10px; }
+        
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(7, 40px); 
+            grid-template-rows: repeat(7, 40px);
+            gap: 2px; background-color: #333; width: fit-content; border: 3px solid #333;
+            margin: 0 auto;
+        }
+
+        /* スマホ用サイズ調整 */
+        @media (max-width: 400px) {
+            .grid {
+                grid-template-columns: repeat(7, 11vw);
+                grid-template-rows: repeat(7, 11vw);
+            }
+        }
+
+        .cell {
+            width: 100%; height: 100%; background-color: #0077be;
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+            color: white; font-size: 12px;
+        }
+        .ship { background-color: #777 !important; }
+        
+        .btn { padding: 12px 24px; font-size: 16px; border: none; border-radius: 10px; cursor: pointer; color: white; font-weight: bold; }
+        .btn-ready { background-color: #4CAF50; box-shadow: 0 4px #2e6631; }
+        .btn-ready:active { transform: translateY(2px); box-shadow: none; }
+        .btn-join { background-color: #2196F3; }
+
+        #setup-screen { margin-top: 50px; }
+        #game-screen { display: none; }
+        input { padding: 12px; font-size: 16px; border-radius: 5px; border: 1px solid #ccc; width: 80%; max-width: 300px; margin-bottom: 15px; }
+        #status-msg { font-weight: bold; margin: 15px 0; min-height: 1.2em; }
+    </style>
+</head>
+<body>
+    <div id="setup-screen">
+        <h1>🚢 秘密の対戦</h1>
+        <p>合言葉を決めて、相手と同じ言葉を入れてね：</p>
+        <input type="text" id="room-input" placeholder="例：パパ123">
+        <br>
+        <button class="btn btn-join" onclick="joinRoom()">対戦ルームに入る</button>
+    </div>
+
+    <div id="game-screen">
+        <h2 id="room-display" style="font-size: 16px; color: #666;"></h2>
+        <div>
+            <button id="done-button" class="btn btn-ready" onclick="finishSetup()">船の配置を完了する</button>
+            <p id="status-msg">自分の海に船を置いてね！</p>
+        </div>
+
+        <div class="game-container">
+            <div>
+                <h3>自分の海</h3>
+                <div id="my-grid" class="grid"></div>
+            </div>
+            <div>
+                <h3>相手の海 (攻撃！)</h3>
+                <div id="enemy-grid" class="grid"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const myGrid = document.getElementById('my-grid');
+        const enemyGrid = document.getElementById('enemy-grid');
+        const statusMsg = document.getElementById('status-msg');
+        
+        let isSetupMode = true; 
+        let isMyTurn = false; 
+        let isGameStarted = false; // ★追加：二人揃ったか
+        let myShipsHit = 0;      
+        let enemyShipsHit = 0;   
+        let enemyShipsTotal = 0; 
+        const myShips = []; 
+
+        function joinRoom() {
+            const roomName = document.getElementById('room-input').value;
+            if (!roomName) { alert("合言葉を入れてね！"); return; }
+            socket.emit('join-room', roomName);
+            document.getElementById('setup-screen').style.display = 'none';
+            document.getElementById('game-screen').style.display = 'block';
+            document.getElementById('room-display').textContent = "現在の部屋：" + roomName;
+        }
+
+        for (let i = 0; i < 49; i++) {
+            const myCell = document.createElement('div');
+            myCell.classList.add('cell');
+            myCell.addEventListener('click', () => {
+                if (isSetupMode) {
+                    if (!myShips.includes(i)) { myCell.classList.add('ship'); myShips.push(i); }
+                    else { myCell.classList.remove('ship'); myShips.splice(myShips.indexOf(i), 1); }
+                }
+            });
+            myGrid.appendChild(myCell);
+
+            const enemyCell = document.createElement('div');
+            enemyCell.classList.add('cell');
+            enemyCell.addEventListener('click', () => {
+                // ★2人揃っていない（!isGameStarted）ときは攻撃できない
+                if (!isSetupMode && isMyTurn && isGameStarted) {
+                    socket.emit('attack', i);
+                    enemyCell.style.backgroundColor = 'white';
+                    enemyCell.textContent = '...';
+                    isMyTurn = false;
+                    statusMsg.textContent = "相手のターンです...";
+                } else if (!isSetupMode && isMyTurn && !isGameStarted) {
+                    alert("相手が準備できるまで待ってね！");
+                } else if (!isSetupMode && !isMyTurn) {
+                    alert("今は相手のターンです！");
+                }
+            });
+            enemyGrid.appendChild(enemyCell);
+        }
+
+        function finishSetup() {
+            if (myShips.length === 0) { alert("船を置いてね！"); return; }
+            isSetupMode = false;
+            document.getElementById('done-button').style.display = 'none';
+            socket.emit('ready', { shipCount: myShips.length });
+            statusMsg.textContent = "相手の準備を待っています...";
+        }
+
+        // 2人揃った合図
+        socket.on('game-start', () => {
+            isGameStarted = true;
+            statusMsg.textContent += "【対戦開始！】";
+        });
+
+        socket.on('enemy-ship-count', (data) => {
+            if (data.id !== socket.id) enemyShipsTotal = data.shipCount;
+        });
+
+        socket.on('order-decision', (order) => {
+            isMyTurn = (order === 1);
+            statusMsg.textContent = isMyTurn ? "あなたのターン！" : "あなたは後攻です。";
+            statusMsg.style.color = isMyTurn ? "red" : "black";
+        });
+        
+        socket.on('attack', (idx) => {
+            let res = myShips.includes(idx) ? "hit" : "miss";
+            const cell = myGrid.children[idx];
+            cell.style.backgroundColor = (res === "hit") ? 'red' : '#e0f7fa';
+            cell.textContent = (res === "hit") ? '💥' : '🌊';
+            if (res === "hit") myShipsHit++;
+
+            if (myShipsHit < myShips.length) {
+                isMyTurn = true;
+                statusMsg.textContent = "あなたのターン！";
+                statusMsg.style.color = "red";
+            } else {
+                statusMsg.textContent = "全滅しました... 敗北！";
+                isMyTurn = false;
+            }
+            socket.emit('result', { index: idx, status: res });
+        });
+
+        socket.on('result', (data) => {
+            const cell = enemyGrid.children[data.index];
+            cell.style.backgroundColor = (data.status === "hit") ? 'red' : '#e0f7fa';
+            cell.textContent = (data.status === "hit") ? '💥' : '🌊';
+            if (data.status === "hit") {
+                enemyShipsHit++;
+                if (enemyShipsTotal > 0 && enemyShipsHit === enemyShipsTotal) {
+                    statusMsg.textContent = "勝利！🏆 おめでとう！";
+                    statusMsg.style.color = "blue";
+                    isMyTurn = false;
+                }
+            }
+        });
+    </script>
+</body>
+</html>
